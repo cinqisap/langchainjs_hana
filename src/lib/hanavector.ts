@@ -19,9 +19,16 @@ interface Filter {
 }
 
 enum DistanceStrategy {
-    COSINE = "COSINE_SIMILARITY",
-    EUCLIDEAN_DISTANCE = "L2DISTANCE",
+    COSINE = "COSINE",
+    EUCLIDEAN_DISTANCE = "EUCLIDEAN_DISTANCE",
   }
+
+  
+const HANA_DISTANCE_FUNCTION: Record<DistanceStrategy, [string, string]> = {
+[DistanceStrategy.COSINE]: ["COSINE_SIMILARITY", "DESC"],
+[DistanceStrategy.EUCLIDEAN_DISTANCE]: ["L2DISTANCE", "ASC"],
+};
+  
 
 // const HANA_DISTANCE_FUNCTION = {
 //     [DistanceStrategy.COSINE]: ("COSINE_SIMILARITY", "DESC"),
@@ -46,6 +53,8 @@ export interface HanaDBArgs {
 export class HanaDB extends VectorStore {
     private connection: hanaClient.Connection;
     // private distanceStrategy: DistanceStrategy;
+    // Compile pattern only once, for better performance
+    private static compiledPattern = new RegExp("^[a-zA-Z_][a-zA-Z0-9_]*$");
     private tableName: string;
     private contentColumn: string;
     private metadataColumn: string;
@@ -101,6 +110,56 @@ export class HanaDB extends VectorStore {
         }
         return value;
     }
+
+    /**
+     * Sanitizes a list to ensure all elements are floats (numbers in TypeScript).
+     * Throws an error if any element is not a number.
+     *
+     * @param {number[]} embedding - The array of numbers (floats) to be sanitized.
+     * @returns {number[]} The sanitized array of numbers (floats).
+     * @throws {Error} Throws an error if any element is not a number.
+     */
+    private sanitizeListFloat(embedding: number[]): number[] {
+        embedding.forEach((value) => {
+        if (typeof value !== 'number') {
+            throw new Error(`Value (${value}) does not have type number`);
+        }
+        });
+        return embedding;
+    }
+
+    /**
+     * Sanitizes the keys of the metadata object to ensure they match the required pattern.
+     * Throws an error if any key does not match the pattern.
+     * 
+     * @param {Record<string, any>} metadata - The metadata object with keys to be validated.
+     * @returns {Record<string, any>} The original metadata object if all keys are valid.
+     * @throws {Error} Throws an error if any metadata key is invalid.
+     */
+    private sanitizeMetadataKeys(metadata: Record<string, any>): Record<string, any> {
+        Object.keys(metadata).forEach(key => {
+        if (!HanaDB.compiledPattern.test(key)) {
+            throw new Error(`Invalid metadata key ${key}`);
+        }
+        });
+        return metadata;
+    }
+
+    /**
+     * Parses a string representation of a float array and returns an array of numbers.
+     * Assumes the input string is formatted like "1.0,2.0,3.0" (without brackets).
+     * 
+     * @param {string} arrayAsString - The string representation of the array.
+     * @returns {number[]} An array of floats parsed from the string.
+     */
+    private parseFloatArrayFromString(arrayAsString: string): number[] {
+        // Removing the leading and trailing brackets is not necessary if the input is "1.0,2.0,3.0"
+        // If your input string includes brackets, uncomment the following line:
+        // const arrayWithoutBrackets = arrayAsString.slice(1, -1);
+        // Use arrayWithoutBrackets.split(",") if you've uncommented the above line.
+        return arrayAsString.split(",").map(x => parseFloat(x));
+    }
+  
 
     /**
      * Checks if the specified column exists in the table and validates its data type and length.
@@ -288,52 +347,6 @@ export class HanaDB extends VectorStore {
     }
 
     /**
-     * Creates an instance of `HanaDB` from an array of
-     * Document instances. The documents are added to the collection.
-     * @param docs Array of Document instances to be added to the collection.
-     * @param embeddings Embeddings instance used to convert the documents to vectors.
-     * @param dbConfig Configuration for the HanaDB.
-     * @returns Promise that resolves to an instance of `HanaDB`.
-     */
-    static async fromDocuments(
-        docs: Document[],
-        embeddings: EmbeddingsInterface,
-        dbConfig: HanaDBArgs
-    ): Promise<HanaDB> {
-        const instance = new this(embeddings, dbConfig);
-        await instance.addDocuments(docs);
-        return instance;
-    }
-
-    /**
-     * Adds an array of documents to the collection. The documents are first
-     * converted to vectors using the `embedDocuments` method of the
-     * `embeddings` instance.
-     * @param documents Array of Document instances to be added to the collection.
-     * @returns Promise that resolves when the documents are added.
-     */
-    async addDocuments(documents: Document[]): Promise<void> {
-        const texts = documents.map(({ pageContent }) => pageContent);
-        console.log(texts)
-        return this.addVectors(
-        await this.embeddings.embedDocuments(texts),
-        documents
-        );
-    }
-
-    /**
-     * Adds an array of vectors and corresponding documents to the collection.
-     * The vectors and documents are batch inserted into the database.
-     * @param vectors Array of vectors to be added to the collection.
-     * @param documents Array of Document instances corresponding to the vectors.
-     * @returns Promise that resolves when the vectors and documents are added.
-     */
-    async addVectors(vectors: number[][], documents: Document[]): Promise<void> {
-
-    }
-
-
-    /**
      * Instance method to add more texts to the vector store. This method optionally accepts pre-generated embeddings.
      * @param texts Iterable of strings/text to add to the vector store.
      * @param metadatas Optional list of metadata corresponding to each text.
@@ -364,6 +377,131 @@ export class HanaDB extends VectorStore {
         }
     }
 
+
+    /**
+     * Creates an instance of `HanaDB` from an array of
+     * Document instances. The documents are added to the database.
+     * @param docs List of documents to be converted to vectors.
+     * @param embeddings Embeddings instance used to convert the documents to vectors.
+     * @param dbConfig Configuration for the HanaDB.
+     * @returns Promise that resolves to an instance of `HanaDB`.
+     */
+    static async fromDocuments(
+        docs: Document[],
+        embeddings: EmbeddingsInterface,
+        dbConfig: HanaDBArgs
+    ): Promise<HanaDB> {
+        const instance = new this(embeddings, dbConfig);
+        await instance.initialize();
+        await instance.addDocuments(docs);
+        return instance;
+    }
+
+    /**
+     * Adds an array of documents to the collection. The documents are first
+     * converted to vectors using the `embedDocuments` method of the
+     * `embeddings` instance.
+     * @param documents Array of Document instances to be added to the collection.
+     * @returns Promise that resolves when the documents are added.
+     */
+    async addDocuments(documents: Document[]): Promise<void> {
+        const texts = documents.map(doc => doc.pageContent);
+        const metadatas = documents.map(doc => doc.metadata);
+        return this.addTexts(texts, metadatas);
+      }
+
+    /**
+     * Adds an array of vectors and corresponding documents to the database.
+     * The vectors and documents are batch inserted into the database.
+     * @param vectors Array of vectors to be added to the collection.
+     * @param documents Array of Document instances corresponding to the vectors.
+     * @returns Promise that resolves when the vectors and documents are added.
+     */
+    async addVectors(vectors: number[][], documents: Document[]): Promise<void> {
+
+
+    }
+
+    /**
+     * Return docs most similar to query.
+     * @param query Query text for the similarity search.
+     * @param k Number of Documents to return. Defaults to 4.
+     * @param filter A dictionary of metadata fields and values to filter by.
+                    Defaults to None.
+     * @returns Promise that resolves to a list of documents and their corresponding similarity scores.
+     */
+    async similaritySearch(
+        query: string,
+        k = 4,
+        filter: this["FilterType"] | undefined = undefined
+    ): Promise<Document[]> {
+        const results = await this.similaritySearchWithScore(query, k, filter);
+        return results.map((result) => result[0]);
+    }
+
+    /**
+     * Return documents and score values most similar to query.
+     * @param query Query text for the similarity search.
+     * @param k Number of Documents to return. Defaults to 4.
+     * @param filter A dictionary of metadata fields and values to filter by.
+                    Defaults to None.
+     * @returns Promise that resolves to a list of documents and their corresponding similarity scores.
+     */
+    similaritySearchWithScore(query: string, k: number = 4, filter?:this["FilterType"] | undefined): Promise<[DocumentInterface<Record<string, any>>, number][]> {
+        const queryEmbedding = this.embeddings.embedQuery(query);
+        return this.similaritySearchWithScoreByVector(queryEmbedding, k, filter);
+    }
+    
+    /**
+     * Return docs most similar to the given embedding.
+     * @param query Query text for the similarity search.
+     * @param k Number of Documents to return. Defaults to 4.
+     * @param filter A dictionary of metadata fields and values to filter by.
+                    Defaults to None.
+     * @returns Promise that resolves to a list of documents and their corresponding similarity scores.
+     */
+    similaritySearchWithScoreByVector(queryEmbedding: Promise<number[]>, k: number, filter?: this["FilterType"] | undefined): Promise<[DocumentInterface<Record<string, any>>, number][]> {
+        const wholeResult = this.similaritySearchWithScoreAndVectorByVector(queryEmbedding, k, filter);
+        // Return documents and scores, discarding the vectors
+        return wholeResult.map(([doc, score]) => [doc, score]);
+    }
+
+    // similaritySearchWithScoreAndVectorByVector(queryEmbedding: Promise<number[]>, k: number = 4, filter?: this["FilterType"] | undefined): Promise<[DocumentInterface<Record<string, any>>, number][]> {
+        
+    //     return [];
+    //   }
+    // Example method: Assumes existence of methods for sanitizing and executing SQL
+    async similaritySearchWithScoreAndVectorByVector(embedding: number[], k: number = 4, filter?: Record<string, any>): Promise<Array<[Document, number, number[]]>> {
+        const result: Array<[Document, number, number[]]> = [];
+        k = this.sanitizeInt(k);
+        embedding = this.sanitizeListFloat(embedding);
+        const distanceFuncName = HANA_DISTANCE_FUNCTION[this.distanceStrategy][0];
+        const embeddingAsString = embedding.join(",");
+        let sqlStr = `SELECT TOP ${k}
+                    ${this.contentColumn}, 
+                    ${this.metadataColumn}, 
+                    TO_NVARCHAR(${this.vectorColumn}), 
+                    ${distanceFuncName}(${this.vectorColumn}, TO_REAL_VECTOR(ARRAY[${embeddingAsString}])) AS CS
+                    FROM ${this.tableName}`;
+
+        const orderStr = ` ORDER BY CS ${HANA_DISTANCE_FUNCTION[this.distanceStrategy][1]}`;
+        const [whereStr, queryTuple] = this.createWhereByFilter(filter);
+        sqlStr += whereStr + orderStr;
+
+        try {
+        const rows = await this.executeSql(sqlStr, queryTuple);
+        rows.forEach(row => {
+            const metadata = JSON.parse(row[1]);
+            const doc: Document = { pageContent: row[0], metadata };
+            const resultVector = this.parseFloatArrayFromString(row[2]);
+            result.push([doc, row[3], resultVector]);
+        });
+        } catch (error) {
+        console.error("Failed to execute similarity search", error);
+        }
+
+        return result;
+    }
     similaritySearchVectorWithScore(query: number[], k: number, filter?: this["FilterType"] | undefined): Promise<[DocumentInterface<Record<string, any>>, number][]> {
         throw new Error("Method not implemented.");
     }

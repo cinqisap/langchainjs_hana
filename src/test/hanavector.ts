@@ -1,6 +1,8 @@
 import * as hanaClient from '@sap/hana-client';
 import { HanaDB, HanaDBArgs } from 'lib/hanavector';
 import { OpenAIEmbeddings } from "@langchain/openai";
+import { TextLoader } from "langchain/document_loaders/fs/text";
+import { CharacterTextSplitter } from "langchain/text_splitter";
 
 export const run = async () => {
 // Connection parameters
@@ -38,7 +40,7 @@ AND COLUMN_NAME = 'VEC_TEXT'`;
 
 const args: HanaDBArgs = {
     connection: client,
-    tableName: 'test2'
+    tableName: 'test'
     };
       
     // let stm = client.prepare(columnExistsSQL);
@@ -54,17 +56,20 @@ const args: HanaDBArgs = {
     // const results = await client.execute(columnExistsSQL);
     // console.log(results);
 
-// const hanaDb = new HanaDB(new OpenAIEmbeddings(), args);
-// await hanaDb.initialize();
+const hanaDb = new HanaDB(new OpenAIEmbeddings(), args);
+await hanaDb.initialize();
 // var filter = { };
 // await hanaDb.delete({filter : filter})
+// hanaDb.addTexts(["foo", "bar", "baz"],
+//     [{ page: 1 }, { page: 2 }, { page: 3 }])
 
-const vectorStore = await HanaDB.fromTexts(
-    ["foo", "bar", "baz"],
-    [{ page: 1 }, { page: 2 }, { page: 3 }],
-    new OpenAIEmbeddings(),
-    args
-    );
+// const vectorStore = await HanaDB.fromTexts(
+//     ["foo", "bar", "baz"],
+//     [{ page: 1 }, { page: 2 }, { page: 3 }],
+//     new OpenAIEmbeddings(),
+//     args
+//     );
+
     // hanaDb.tableExists('EMBEDDINGS').then(exists => {
     //     console.log('Table exists:', exists);
     // }).catch(error => {
@@ -72,6 +77,18 @@ const vectorStore = await HanaDB.fromTexts(
     // });
 
     // hanaDb.createTableIfNotExists()
+
+// Load documents from file
+const loader = new TextLoader("./state_of_the_union.txt");
+const rawDocuments = await loader.load();
+const splitter = new CharacterTextSplitter({
+  chunkSize: 500,
+  chunkOverlap: 0
+});
+const documents = await splitter.splitDocuments(rawDocuments);
+console.log(documents)
+hanaDb.addDocuments(documents)
+
 } catch (error) {
     console.error('Error:', error);
 } finally {
