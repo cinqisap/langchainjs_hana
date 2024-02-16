@@ -1,5 +1,5 @@
 import * as hanaClient from '@sap/hana-client';
-import { HanaDB, HanaDBArgs } from 'lib/hanavector';
+import { HanaDB, HanaDBArgs, DistanceStrategy } from 'lib/hanavector';
 import { OpenAIEmbeddings } from "@langchain/openai";
 import { TextLoader } from "langchain/document_loaders/fs/text";
 import { CharacterTextSplitter } from "langchain/text_splitter";
@@ -38,9 +38,9 @@ WHERE SCHEMA_NAME = CURRENT_SCHEMA AND
 TABLE_NAME = 'EMBEDDINGS'  
 AND COLUMN_NAME = 'VEC_TEXT'`;
 
-const args: HanaDBArgs = {
+var args: HanaDBArgs = {
     connection: client,
-    tableName: 'test'
+    tableName: 'test',
     };
       
     // let stm = client.prepare(columnExistsSQL);
@@ -56,8 +56,8 @@ const args: HanaDBArgs = {
     // const results = await client.execute(columnExistsSQL);
     // console.log(results);
 
-const hanaDb = new HanaDB(new OpenAIEmbeddings(), args);
-await hanaDb.initialize();
+var hanaDb = new HanaDB(new OpenAIEmbeddings(), args);
+// await hanaDb.initialize();
 // var filter = { };
 // await hanaDb.delete({filter : filter})
 // hanaDb.addTexts(["foo", "bar", "baz"],
@@ -79,16 +79,37 @@ await hanaDb.initialize();
     // hanaDb.createTableIfNotExists()
 
 // Load documents from file
-const loader = new TextLoader("./state_of_the_union.txt");
-const rawDocuments = await loader.load();
-const splitter = new CharacterTextSplitter({
-  chunkSize: 500,
-  chunkOverlap: 0
-});
-const documents = await splitter.splitDocuments(rawDocuments);
-console.log(documents)
-hanaDb.addDocuments(documents)
+// const loader = new TextLoader("./state_of_the_union.txt");
+// const rawDocuments = await loader.load();
+// const splitter = new CharacterTextSplitter({
+//   chunkSize: 500,
+//   chunkOverlap: 0
+// });
+// const documents = await splitter.splitDocuments(rawDocuments);
+// console.log(documents)
+// hanaDb.addDocuments(documents)
 
+//similiarity search using default cosine distance method
+var query = "What did the president say about Ketanji Brown Jackson"
+var docs = await hanaDb.similaritySearch(query, 2)
+docs.forEach(doc => {
+    console.log("-".repeat(80)); 
+    console.log(doc.pageContent); 
+});
+
+//similiarity search using euclidean distance method
+var args: HanaDBArgs = {
+    connection: client,
+    tableName: 'test',
+    distanceStrategy: DistanceStrategy.EUCLIDEAN_DISTANCE
+    };
+var hanaDb = new HanaDB(new OpenAIEmbeddings(), args);
+var query = "What did the president say about Ketanji Brown Jackson"
+var docs = await hanaDb.similaritySearch(query, 2)
+docs.forEach(doc => {
+    console.log("-".repeat(80)); 
+    console.log(doc.pageContent); 
+});
 } catch (error) {
     console.error('Error:', error);
 } finally {

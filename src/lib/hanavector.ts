@@ -7,7 +7,19 @@ import { Document, DocumentInterface } from "@langchain/core/documents";
 import { maximalMarginalRelevance } from "@langchain/core/utils/math";
 import * as hanaClient from '@sap/hana-client';
 
-// const defaultDistanceStrategy = DistanceStrategy.COSINE;
+
+export enum DistanceStrategy {
+    COSINE = "COSINE",
+    EUCLIDEAN_DISTANCE = "EUCLIDEAN_DISTANCE",
+  }
+
+  
+const HANA_DISTANCE_FUNCTION: Record<DistanceStrategy, [string, string]> = {
+[DistanceStrategy.COSINE]: ["COSINE_SIMILARITY", "DESC"],
+[DistanceStrategy.EUCLIDEAN_DISTANCE]: ["L2DISTANCE", "ASC"],
+};
+
+const defaultDistanceStrategy = DistanceStrategy.COSINE;
 const defaultTableName: string = "EMBEDDINGS";
 const defaultContentColumn: string = "VEC_TEXT";
 const defaultMetadataColumn: string = "VEC_META";
@@ -18,16 +30,7 @@ interface Filter {
     [key: string]: boolean | string | number;
 }
 
-enum DistanceStrategy {
-    COSINE = "COSINE",
-    EUCLIDEAN_DISTANCE = "EUCLIDEAN_DISTANCE",
-  }
 
-  
-const HANA_DISTANCE_FUNCTION: Record<DistanceStrategy, [string, string]> = {
-[DistanceStrategy.COSINE]: ["COSINE_SIMILARITY", "DESC"],
-[DistanceStrategy.EUCLIDEAN_DISTANCE]: ["L2DISTANCE", "ASC"],
-};
   
 
 // const HANA_DISTANCE_FUNCTION = {
@@ -41,7 +44,7 @@ const HANA_DISTANCE_FUNCTION: Record<DistanceStrategy, [string, string]> = {
  */
 export interface HanaDBArgs {
     connection: hanaClient.Connection;
-    // distanceStrategy?: DistanceStrategy;
+    distanceStrategy?: DistanceStrategy;
     tableName?: string ;
     contentColumn?: string;
     metadataColumn?: string;
@@ -52,7 +55,7 @@ export interface HanaDBArgs {
 
 export class HanaDB extends VectorStore {
     private connection: hanaClient.Connection;
-    // private distanceStrategy: DistanceStrategy;
+    private distanceStrategy: DistanceStrategy;
     // Compile pattern only once, for better performance
     private static compiledPattern = new RegExp("^[a-zA-Z_][a-zA-Z0-9_]*$");
     private tableName: string;
@@ -67,7 +70,7 @@ export class HanaDB extends VectorStore {
 
     constructor(embeddings: EmbeddingsInterface, args: HanaDBArgs) {
         super(embeddings, args);
-        // this.distanceStrategy = args.distanceStrategy || defaultDistanceStrategy;
+        this.distanceStrategy = args.distanceStrategy || defaultDistanceStrategy;
         this.tableName = this.sanitizeName(args.tableName || defaultTableName);
         this.contentColumn = this.sanitizeName(args.contentColumn || defaultContentColumn);
         this.metadataColumn = this.sanitizeName(args.metadataColumn || defaultMetadataColumn);
@@ -259,7 +262,7 @@ export class HanaDB extends VectorStore {
      * @param filter - A filter object with keys as metadata fields and values as filter values.
      * @returns A tuple containing the WHERE clause string and an array of query parameters.
      */
-    private createWhereByFilter(filter: Filter): [string, Array<string | number>] {
+    private createWhereByFilter(filter?: Filter): [string, Array<string | number>] {
         let queryTuple: Array<string | number> = [];
         let whereStr = "";
         if (filter) {
@@ -433,7 +436,7 @@ export class HanaDB extends VectorStore {
     async similaritySearch(
         query: string,
         k = 4,
-        filter: this["FilterType"] | undefined = undefined
+        filter?: Filter
     ): Promise<Document[]> {
         const results = await this.similaritySearchWithScore(query, k, filter);
         return results.map((result) => result[0]);
@@ -447,9 +450,10 @@ export class HanaDB extends VectorStore {
                     Defaults to None.
      * @returns Promise that resolves to a list of documents and their corresponding similarity scores.
      */
-    similaritySearchWithScore(query: string, k: number = 4, filter?:this["FilterType"] | undefined): Promise<[DocumentInterface<Record<string, any>>, number][]> {
-        const queryEmbedding = this.embeddings.embedQuery(query);
-        return this.similaritySearchWithScoreByVector(queryEmbedding, k, filter);
+    async similaritySearchWithScore(query: string, k: number = 4, filter?:Filter): Promise<[Document, number][]> {
+        const queryEmbedding = await this.embeddings.embedQuery(query);
+        return this.similaritySearchVectorWithScore(queryEmbedding, k, filter);
+        
     }
     
     /**
@@ -460,8 +464,8 @@ export class HanaDB extends VectorStore {
                     Defaults to None.
      * @returns Promise that resolves to a list of documents and their corresponding similarity scores.
      */
-    similaritySearchWithScoreByVector(queryEmbedding: Promise<number[]>, k: number, filter?: this["FilterType"] | undefined): Promise<[DocumentInterface<Record<string, any>>, number][]> {
-        const wholeResult = this.similaritySearchWithScoreAndVectorByVector(queryEmbedding, k, filter);
+    async similaritySearchVectorWithScore(queryEmbedding: number[], k: number, filter?: Filter): Promise<[Document, number][]> {
+        const wholeResult = await this.similaritySearchWithScoreAndVectorByVector(queryEmbedding, k, filter);
         // Return documents and scores, discarding the vectors
         return wholeResult.map(([doc, score]) => [doc, score]);
     }
@@ -471,40 +475,44 @@ export class HanaDB extends VectorStore {
     //     return [];
     //   }
     // Example method: Assumes existence of methods for sanitizing and executing SQL
-    async similaritySearchWithScoreAndVectorByVector(embedding: number[], k: number = 4, filter?: Record<string, any>): Promise<Array<[Document, number, number[]]>> {
+    async similaritySearchWithScoreAndVectorByVector(embedding: number[], k: number = 4, filter?: Filter): Promise<Array<[Document, number, number[]]>> {
         const result: Array<[Document, number, number[]]> = [];
         k = this.sanitizeInt(k);
         embedding = this.sanitizeListFloat(embedding);
         const distanceFuncName = HANA_DISTANCE_FUNCTION[this.distanceStrategy][0];
+        console.log("Distance method " + distanceFuncName)
         const embeddingAsString = embedding.join(",");
         let sqlStr = `SELECT TOP ${k}
                     ${this.contentColumn}, 
                     ${this.metadataColumn}, 
                     TO_NVARCHAR(${this.vectorColumn}), 
-                    ${distanceFuncName}(${this.vectorColumn}, TO_REAL_VECTOR(ARRAY[${embeddingAsString}])) AS CS
+                    ${distanceFuncName}(${this.vectorColumn}, TO_REAL_VECTOR('[${embeddingAsString}]')) AS CS
                     FROM ${this.tableName}`;
 
         const orderStr = ` ORDER BY CS ${HANA_DISTANCE_FUNCTION[this.distanceStrategy][1]}`;
         const [whereStr, queryTuple] = this.createWhereByFilter(filter);
         sqlStr += whereStr + orderStr;
-
+        // console.log(sqlStr)
+        const client = this.connection;
+        const stm = client.prepare(sqlStr)
         try {
-        const rows = await this.executeSql(sqlStr, queryTuple);
-        rows.forEach(row => {
-            const metadata = JSON.parse(row[1]);
-            const doc: Document = { pageContent: row[0], metadata };
-            const resultVector = this.parseFloatArrayFromString(row[2]);
-            result.push([doc, row[3], resultVector]);
-        });
+        // const rows = await client.execute(sqlStr, queryTuple);
+        const resultSet = stm.execQuery();
+        while(resultSet.next()){
+            const metadata = JSON.parse(resultSet.getValue(1));
+            const doc: Document = { pageContent: resultSet.getValue(0), metadata };
+            const resultVector = this.parseFloatArrayFromString(resultSet.getValue(2));
+            result.push([doc, resultSet.getValue(3), resultVector]);  
+        }
         } catch (error) {
         console.error("Failed to execute similarity search", error);
         }
-
+        // console.log(result);
         return result;
     }
-    similaritySearchVectorWithScore(query: number[], k: number, filter?: this["FilterType"] | undefined): Promise<[DocumentInterface<Record<string, any>>, number][]> {
-        throw new Error("Method not implemented.");
-    }
+    // similaritySearchVectorWithScore(query: number[], k: number, filter?: Filter): Promise<[DocumentInterface<Record<string, any>>, number][]> {
+    //     throw new Error("Method not implemented.");
+    // }
 
 
 }
