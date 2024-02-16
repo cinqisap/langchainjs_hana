@@ -31,13 +31,6 @@ interface Filter {
 }
 
 
-  
-
-// const HANA_DISTANCE_FUNCTION = {
-//     [DistanceStrategy.COSINE]: ("COSINE_SIMILARITY", "DESC"),
-//     [DistanceStrategy.EUCLIDEAN_DISTANCE]: ("L2DISTANCE", "ASC"),
-//   };
-
 /**
  * Interface defining the arguments required to create an instance of
  * `HanaDB`.
@@ -328,20 +321,9 @@ export class HanaDB extends VectorStore {
         embeddings: EmbeddingsInterface,
         dbConfig: HanaDBArgs
     ): Promise<HanaDB> {
-        // const docs = [];
-        // for (let i = 0; i < texts.length; i += 1) {
-        // const metadata = Array.isArray(metadatas) ? metadatas[i] : metadatas;
-        // const newDoc = new Document({
-        //     pageContent: texts[i],
-        //     metadata,
-        // });
-        // docs.push(newDoc);
-        // }
-        // console.log(docs)
         const instance = new HanaDB(
             embeddings,
             dbConfig
-            // Initialize other parameters here
         );
         await instance.initialize();
         await instance.addTexts(texts, metadatas); // Embed and add texts to the database
@@ -422,7 +404,6 @@ export class HanaDB extends VectorStore {
      */
     async addVectors(vectors: number[][], documents: Document[]): Promise<void> {
 
-
     }
 
     /**
@@ -439,6 +420,7 @@ export class HanaDB extends VectorStore {
         filter?: Filter
     ): Promise<Document[]> {
         const results = await this.similaritySearchWithScore(query, k, filter);
+        // console.log(results)
         return results.map((result) => result[0]);
     }
 
@@ -470,17 +452,22 @@ export class HanaDB extends VectorStore {
         return wholeResult.map(([doc, score]) => [doc, score]);
     }
 
-    // similaritySearchWithScoreAndVectorByVector(queryEmbedding: Promise<number[]>, k: number = 4, filter?: this["FilterType"] | undefined): Promise<[DocumentInterface<Record<string, any>>, number][]> {
-        
-    //     return [];
-    //   }
-    // Example method: Assumes existence of methods for sanitizing and executing SQL
+    /**
+     * Performs a similarity search based on vector comparison and returns documents along with their similarity scores and vectors.
+     * @param embedding The vector representation of the query for similarity comparison.
+     * @param k The number of top similar documents to return.
+     * @param filter Optional filter criteria to apply to the search query.
+     * @returns A promise that resolves to an array of tuples, each containing a Document, its similarity score, and its vector.
+     */
     async similaritySearchWithScoreAndVectorByVector(embedding: number[], k: number = 4, filter?: Filter): Promise<Array<[Document, number, number[]]>> {
         const result: Array<[Document, number, number[]]> = [];
+        // Sanitize inputs
         k = this.sanitizeInt(k);
         embedding = this.sanitizeListFloat(embedding);
+        // Determine the distance function based on the configured strategy
         const distanceFuncName = HANA_DISTANCE_FUNCTION[this.distanceStrategy][0];
         console.log("Distance method " + distanceFuncName)
+        // Convert the embedding vector to a string for SQL query
         const embeddingAsString = embedding.join(",");
         let sqlStr = `SELECT TOP ${k}
                     ${this.contentColumn}, 
@@ -488,16 +475,19 @@ export class HanaDB extends VectorStore {
                     TO_NVARCHAR(${this.vectorColumn}), 
                     ${distanceFuncName}(${this.vectorColumn}, TO_REAL_VECTOR('[${embeddingAsString}]')) AS CS
                     FROM ${this.tableName}`;
-
+        // Add order by clause to sort by similarity
         const orderStr = ` ORDER BY CS ${HANA_DISTANCE_FUNCTION[this.distanceStrategy][1]}`;
+
+        // Prepare and execute the SQL query
         const [whereStr, queryTuple] = this.createWhereByFilter(filter);
         sqlStr += whereStr + orderStr;
-        // console.log(sqlStr)
+        
         const client = this.connection;
         const stm = client.prepare(sqlStr)
         try {
         // const rows = await client.execute(sqlStr, queryTuple);
-        const resultSet = stm.execQuery();
+        // console.log(rows)
+        const resultSet = stm.execQuery(queryTuple);
         while(resultSet.next()){
             const metadata = JSON.parse(resultSet.getValue(1));
             const doc: Document = { pageContent: resultSet.getValue(0), metadata };
@@ -510,9 +500,48 @@ export class HanaDB extends VectorStore {
         // console.log(result);
         return result;
     }
-    // similaritySearchVectorWithScore(query: number[], k: number, filter?: Filter): Promise<[DocumentInterface<Record<string, any>>, number][]> {
-    //     throw new Error("Method not implemented.");
-    // }
+    
+
+    /**
+     * Return documents selected using the maximal marginal relevance.
+     * Maximal marginal relevance optimizes for similarity to the query AND
+     * diversity among selected documents.
+     * @param query Text to look up documents similar to.
+     * @param options.k Number of documents to return.
+     * @param options.fetchK=20 Number of documents to fetch before passing to
+     *     the MMR algorithm.
+     * @param options.lambda=0.5 Number between 0 and 1 that determines the
+     *     degree of diversity among the results, where 0 corresponds to maximum
+     *     diversity and 1 to minimum diversity.
+     * @returns List of documents selected by maximal marginal relevance.
+     */
+    async maxMarginalRelevanceSearch(
+        query: string,
+        options: MaxMarginalRelevanceSearchOptions<this["FilterType"]>
+    ): Promise<Document[]> {
+        const { k, fetchK = 20, lambda = 0.5} = options;
+
+        const queryEmbedding = await this.embeddings.embedQuery(query);
+        const docs = await this.similaritySearchWithScoreAndVectorByVector(
+        queryEmbedding,
+        fetchK
+        );
+
+        //docs is an Array of tuples: [Document, number, number[]]
+        const embeddingList = docs.map((doc) => doc[2]); // Extracts the embedding from each tuple
+
+        // Re-rank the results using MMR
+        const mmrIndexes = maximalMarginalRelevance(
+        queryEmbedding,
+        embeddingList,
+        lambda,
+        k
+        );
+
+        const mmrDocs = mmrIndexes.map((index) => docs[index][0]);
+        return mmrDocs;
+    }
+
 
 
 }

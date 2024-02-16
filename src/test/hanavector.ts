@@ -1,9 +1,12 @@
 import * as hanaClient from '@sap/hana-client';
 import { HanaDB, HanaDBArgs, DistanceStrategy } from 'lib/hanavector';
-import { OpenAIEmbeddings } from "@langchain/openai";
+import { Document } from "@langchain/core/documents";
 import { TextLoader } from "langchain/document_loaders/fs/text";
 import { CharacterTextSplitter } from "langchain/text_splitter";
-
+import { ChatPromptTemplate } from "@langchain/core/prompts";
+import { ChatOpenAI, OpenAIEmbeddings } from "@langchain/openai";
+import { createStuffDocumentsChain } from "langchain/chains/combine_documents";
+import { createRetrievalChain } from "langchain/chains/retrieval";
 export const run = async () => {
 // Connection parameters
 const connectionParams = {
@@ -57,6 +60,30 @@ var args: HanaDBArgs = {
     // console.log(results);
 
 var hanaDb = new HanaDB(new OpenAIEmbeddings(), args);
+const docs: Document[] = [
+    {
+        pageContent: "foo",
+        metadata: { start: 100, end: 150, docName: "foo.txt", quality: "bad" },
+    },
+    {
+        pageContent: "bar",
+        metadata: { start: 200, end: 250, docName: "bar.txt", quality: "good" },
+    },
+];
+// var filter = { };
+// await hanaDb.delete({filter : filter})
+// hanaDb.addDocuments(docs)
+
+// var query = "foobar"
+// var results = await hanaDb.similaritySearch(query, 2, {"quality": "bad"})
+// results.forEach(results => {
+//     console.log("-".repeat(80)); 
+//     console.log(results.pageContent);
+//     console.log(results.metadata);  
+// });
+
+// var filter = {"quality": "bad"};
+// await hanaDb.delete({filter : filter})
 // await hanaDb.initialize();
 // var filter = { };
 // await hanaDb.delete({filter : filter})
@@ -90,26 +117,62 @@ var hanaDb = new HanaDB(new OpenAIEmbeddings(), args);
 // hanaDb.addDocuments(documents)
 
 //similiarity search using default cosine distance method
-var query = "What did the president say about Ketanji Brown Jackson"
-var docs = await hanaDb.similaritySearch(query, 2)
-docs.forEach(doc => {
-    console.log("-".repeat(80)); 
-    console.log(doc.pageContent); 
+// var query = "What did the president say about Ketanji Brown Jackson"
+// var docs = await hanaDb.similaritySearch(query, 2)
+// docs.forEach(doc => {
+//     console.log("-".repeat(80)); 
+//     console.log(doc.pageContent); 
+// });
+
+// //similiarity search using euclidean distance method
+// var args: HanaDBArgs = {
+//     connection: client,
+//     tableName: 'test',
+//     distanceStrategy: DistanceStrategy.EUCLIDEAN_DISTANCE
+//     };
+// var hanaDb = new HanaDB(new OpenAIEmbeddings(), args);
+// var query = "What did the president say about Ketanji Brown Jackson"
+// var docs = await hanaDb.similaritySearch(query, 2)
+// docs.forEach(doc => {
+//     console.log("-".repeat(80)); 
+//     console.log(doc.pageContent); 
+// });
+
+// //MMR search
+// var docs = await hanaDb.maxMarginalRelevanceSearch(query, {k:2, fetchK: 20})
+// console.log("MRR search")
+// docs.forEach(doc => {
+//     console.log("-".repeat(80)); 
+//     console.log(doc.pageContent); 
+// });
+
+// Use the store as part of a chain
+const model = new ChatOpenAI({ modelName: "gpt-3.5-turbo-1106" });
+const questionAnsweringPrompt = ChatPromptTemplate.fromMessages([
+  [
+    "system",
+    "Answer the user's questions based on the below context:\n\n{context}",
+  ],
+  ["human", "{input}"],
+]);
+
+const combineDocsChain = await createStuffDocumentsChain({
+  llm: model,
+  prompt: questionAnsweringPrompt,
 });
 
-//similiarity search using euclidean distance method
-var args: HanaDBArgs = {
-    connection: client,
-    tableName: 'test',
-    distanceStrategy: DistanceStrategy.EUCLIDEAN_DISTANCE
-    };
-var hanaDb = new HanaDB(new OpenAIEmbeddings(), args);
-var query = "What did the president say about Ketanji Brown Jackson"
-var docs = await hanaDb.similaritySearch(query, 2)
-docs.forEach(doc => {
-    console.log("-".repeat(80)); 
-    console.log(doc.pageContent); 
+const chain = await createRetrievalChain({
+  retriever: hanaDb.asRetriever(),
+  combineDocsChain,
 });
+
+const response = await chain.invoke({
+  input: "What about Mexico and Guatemala? ",
+});
+
+console.log("Chain response:");
+console.log(`Number of used source document chunks: ${response.context.length}`);
+
 } catch (error) {
     console.error('Error:', error);
 } finally {
