@@ -33,14 +33,6 @@ try {
         });
     });
     
-
-const tableExistsSQL = `SELECT COUNT(*) AS COUNT FROM SYS.TABLES WHERE SCHEMA_NAME = CURRENT_SCHEMA AND TABLE_NAME = 'test'`;
-const columnExistsSQL = `SELECT DATA_TYPE_NAME, LENGTH 
-FROM SYS.TABLE_COLUMNS 
-WHERE SCHEMA_NAME = CURRENT_SCHEMA AND 
-TABLE_NAME = 'EMBEDDINGS'  
-AND COLUMN_NAME = 'VEC_TEXT'`;
-
 var args: HanaDBArgs = {
     connection: client,
     tableName: 'test',
@@ -60,16 +52,16 @@ var args: HanaDBArgs = {
     // console.log(results);
 
 var hanaDb = new HanaDB(new OpenAIEmbeddings(), args);
-const docs: Document[] = [
-    {
-        pageContent: "foo",
-        metadata: { start: 100, end: 150, docName: "foo.txt", quality: "bad" },
-    },
-    {
-        pageContent: "bar",
-        metadata: { start: 200, end: 250, docName: "bar.txt", quality: "good" },
-    },
-];
+// var docs: Document[] = [
+//     {
+//         pageContent: "foo",
+//         metadata: { start: 100, end: 150, docName: "foo.txt", quality: "bad" },
+//     },
+//     {
+//         pageContent: "bar",
+//         metadata: { start: 200, end: 250, docName: "bar.txt", quality: "good" },
+//     },
+// ];
 // var filter = { };
 // await hanaDb.delete({filter : filter})
 // hanaDb.addDocuments(docs)
@@ -117,12 +109,12 @@ const docs: Document[] = [
 // hanaDb.addDocuments(documents)
 
 //similiarity search using default cosine distance method
-// var query = "What did the president say about Ketanji Brown Jackson"
-// var docs = await hanaDb.similaritySearch(query, 2)
-// docs.forEach(doc => {
-//     console.log("-".repeat(80)); 
-//     console.log(doc.pageContent); 
-// });
+var query = "What did the president say about Ketanji Brown Jackson"
+var docs = await hanaDb.similaritySearch(query, 2)
+docs.forEach(doc => {
+    console.log("-".repeat(80)); 
+    console.log(doc.pageContent); 
+});
 
 // //similiarity search using euclidean distance method
 // var args: HanaDBArgs = {
